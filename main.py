@@ -1,7 +1,7 @@
 
 from dotenv import load_dotenv, find_dotenv
 load_dotenv(find_dotenv(),override=True)
-
+########################################################################################################################
 def load_document(file):
     import os
     #os.path.splitext() method in Python is used to split the path name into a pair root and ext.
@@ -28,15 +28,14 @@ def load_from_wikipedia(query, lang='en', load_max_docs=2):
     loader = WikipediaLoader(query=query, lang=lang, load_max_docs=load_max_docs )
     wiki_data = loader.load()
     return wiki_data
-
+########################################################################################################################
 def chunk_document_data(data, chunk_size=250, chunk_overlap=0):
    from langchain.text_splitter import RecursiveCharacterTextSplitter
    text_splitter= RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
    chunks = text_splitter.split_documents(data)
    return chunks
-
-# Embedding and Uploading to a Vector DB
-
+########################################################################################################################
+# Embedding and Uploading to a Vector DB (PINECONE)
 def insert_or_fetch_embeddings(index_name, chunks):
     import pinecone
     from langchain_community.vectorstores import Pinecone
@@ -45,7 +44,7 @@ def insert_or_fetch_embeddings(index_name, chunks):
     from pinecone import ServerlessSpec
 
     pc = pinecone.Pinecone() #pinecone api_key already in .env(dotenv)
-    embeddings = OpenAIEmbeddings(models= 'text-embedding-3-small', dimensions=1536)
+    embeddings = OpenAIEmbeddings(models= 'text-embedding-3-small', dimension=1536)
 
     if index_name in pc.list_indexes().names():
         print(f"Index name {index_name} already exists. Loading embeddings...", end='')
@@ -79,9 +78,105 @@ def delete_pinecone_index(index_name='all'):
     else :
         pc.delete_index(index_name)
         print(f"Deleted {index_name} index.")
+########################################################################################################################
+def ask_and_get_answer(vector_store, que):
+    from langchain.chains import RetrievalQA
+    from langchain.chat_models import ChatOpenAI
+
+    llm = ChatOpenAI(model='gpt-3.5-turbo', temperature=1)
+    retriever = vector_store.as_retriever(search_type='similarity', search_kwargs = {'k':3})
+    chain = RetrievalQA.from_chain_type(llm=llm, chain_type='stuff' , retriever=retriever)
+    answer = chain.run(que)
+    return answer
 
 
+# index_name = 'askdocument'
+# vector_store = insert_or_fetch_embeddings(index_name, chunk) {create data chunk and pass 2nd arg}
+#
+# question = input('Ask your question here :')
+# response = ask_and_get_answer(vector_store, question)
+# print(response)
+########################################################################################################################
+# Embedding and Uploading to a Vector DB (Chroma DB)
+def create_embedding_chroma(chunks, persist_directory='./chroma_db'):
+    from langchain_chroma import Chroma
+    from langchain_openai import OpenAIEmbeddings
+
+    embeddings = OpenAIEmbeddings(model='text-embedding-3-small', dimension=1536)
+    vector_store = Chroma.from_documents(chunks, embedding=embeddings, persist_directory=persist_directory)
+    return vector_store
+
+def load_embeddings_chroma(persist_directory='./chroma_db'):
+    from langchain_chroma import Chroma
+    from langchain_openai import OpenAIEmbeddings
+
+    embeddings = OpenAIEmbeddings(model='text-embedding-3-small', dimension=1536)
+    vector_store = Chroma(persist_directory=persist_directory, embedding_function=embeddings)
+    return vector_store
+########################################################################################################################
+########################################################################################################################
+
+# Adding Memory (Chat History)
+from langchain_openai import ChatOpenAI
+from langchain.chains import ConversationalRetrievalChain  # Import class for building conversational AI chains
+from langchain.memory import ConversationBufferMemory  # Import memory for storing conversation history
+
+# Instantiate a ChatGPT LLM (temperature controls randomness)
+llm = ChatOpenAI(model_name='gpt-3.5-turbo', temperature=0)
+
+# Configure vector store to act as a retriever (finding similar items, returning top 5)
+vector_store = load_embeddings_chroma()
+retriever = vector_store.as_retriever(search_type='similarity', search_kwargs={'k': 5})
+# Create a memory buffer to track the conversation
+memory = ConversationBufferMemory(memory_key='chat_history', return_messages=True)
+crc = ConversationalRetrievalChain.from_llm(
+    llm=llm,  # Link the ChatGPT LLM
+    retriever=retriever,  # Link the vector store based retriever
+    memory=memory,  # Link the conversation memory
+    chain_type='stuff',  # Specify the chain type
+    verbose=False  # Set to True to enable verbose logging for debugging
+)
+########################################################################################################################
+########################################################################################################################
+# Using custom prompt template
+from langchain_openai import ChatOpenAI
+from langchain.chains import ConversationalRetrievalChain
+from langchain.memory import ConversationBufferMemory
+
+from langchain.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
+
+llm = ChatOpenAI(model_name='gpt-3.5-turbo', temperature=0)
+retriever = vector_store.as_retriever(search_type='similarity', search_kwargs={'k': 5})
+memory = ConversationBufferMemory(memory_key='chat_history', return_messages=True)
 
 
+system_template = r'''
+Use the following pieces of context to answer the user's question.
+Before answering translate your response to Spanish.
+If you don't find the answer in the provided context, just respond "I don't know."
+---------------
+Context: ```{context}```
+'''
+
+user_template = '''
+Question: ```{question}```
+'''
+
+messages= [
+    SystemMessagePromptTemplate.from_template(system_template),
+    HumanMessagePromptTemplate.from_template(user_template)
+]
+
+qa_prompt = ChatPromptTemplate.from_messages(messages)
+
+cc = ConversationalRetrievalChain.from_llm(
+    llm=llm,
+    retriever=retriever,
+    memory=memory,
+    chain_type='stuff',
+    combine_docs_chain_kwargs={'prompt': qa_prompt },
+    verbose=True
+)
+########################################################################################################################
 
 
