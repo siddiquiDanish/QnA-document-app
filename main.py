@@ -1,5 +1,7 @@
-
+import os
+import streamlit as st
 from dotenv import load_dotenv, find_dotenv
+
 load_dotenv(find_dotenv(),override=True)
 ########################################################################################################################
 def load_document(file):
@@ -16,6 +18,10 @@ def load_document(file):
         from langchain_community.document_loaders import Docx2txtLoader
         print(f"loading {file}...")
         loader = Docx2txtLoader(file)
+    elif extension == '.txt':
+        from langchain_community.document_loaders import TextLoader
+        print(f"loading {file}...")
+        loader = TextLoader(file)
     else :
         print('Document format not supported')
         return None
@@ -79,15 +85,15 @@ def delete_pinecone_index(index_name='all'):
         pc.delete_index(index_name)
         print(f"Deleted {index_name} index.")
 ########################################################################################################################
-def ask_and_get_answer(vector_store, que):
+def ask_and_get_answer(vector_store_db, que, k=3):
     from langchain.chains import RetrievalQA
     from langchain.chat_models import ChatOpenAI
 
-    llm = ChatOpenAI(model='gpt-3.5-turbo', temperature=1)
-    retriever = vector_store.as_retriever(search_type='similarity', search_kwargs = {'k':3})
-    chain = RetrievalQA.from_chain_type(llm=llm, chain_type='stuff' , retriever=retriever)
-    answer = chain.run(que)
-    return answer
+    llm_model = ChatOpenAI(model='gpt-3.5-turbo', temperature=1)
+    db_retriever = vector_store_db.as_retriever(search_type='similarity', search_kwargs = {'k': k})
+    chain = RetrievalQA.from_chain_type(llm=llm_model, chain_type='stuff', retriever=db_retriever)
+    ans = chain.run(que)
+    return ans
 
 
 # index_name = 'askdocument'
@@ -98,19 +104,19 @@ def ask_and_get_answer(vector_store, que):
 # print(response)
 ########################################################################################################################
 # Embedding and Uploading to a Vector DB (Chroma DB)
-def create_embedding_chroma(chunks, persist_directory='./chroma_db'):
+def create_embedding_chroma(chunk, persist_directory='./chroma_db'):
     from langchain_chroma import Chroma
     from langchain_openai import OpenAIEmbeddings
 
-    embeddings = OpenAIEmbeddings(model='text-embedding-3-small', dimension=1536)
-    vector_store = Chroma.from_documents(chunks, embedding=embeddings, persist_directory=persist_directory)
-    return vector_store
+    embeddings = OpenAIEmbeddings(model='text-embedding-3-small', dimensions=1536)
+    vectorstore = Chroma.from_documents(chunk, embedding=embeddings, persist_directory=persist_directory)
+    return vectorstore
 
 def load_embeddings_chroma(persist_directory='./chroma_db'):
     from langchain_chroma import Chroma
     from langchain_openai import OpenAIEmbeddings
 
-    embeddings = OpenAIEmbeddings(model='text-embedding-3-small', dimension=1536)
+    embeddings = OpenAIEmbeddings(model='text-embedding-3-small', dimensions=1536)
     vector_store = Chroma(persist_directory=persist_directory, embedding_function=embeddings)
     return vector_store
 ########################################################################################################################
@@ -178,5 +184,61 @@ cc = ConversationalRetrievalChain.from_llm(
     verbose=True
 )
 ########################################################################################################################
+
+#############################                        STREAMLIT UI                  #####################################
+#Clear histore from st.session state
+def clear_history():
+    if 'history' in st.session_state:
+        del st.session_state['history']
+#####################################
+
+if __name__ == '__main__':
+
+    st.image('img.png', width=75)
+    st.subheader('LLM Document Q&A Application')
+
+
+
+    with st.sidebar:
+        api_key = st.text_input('OpenAI Key : ', type='password')
+        if api_key:
+            os.environ['OPENAI_API_KEY'] = api_key
+        upload_file = st.file_uploader('Upload your file: ', type=['pdf', 'docx', 'txt'])
+        chunk_size = st.number_input('Chunk size: ', min_value=100, max_value=2048, value=300, on_change=clear_history)
+        k = st.number_input('k: ', min_value=1, max_value=20, value=3, on_change=clear_history)
+        add_data = st.button('Add Data',  on_change=clear_history)
+
+        if upload_file and add_data:
+            with st.spinner('Loading, Chunking and Embedding...'):
+                byte_data = upload_file.read()
+                file_name = os.path.join('./', upload_file.name)
+                with open(file_name, 'wb') as f:
+                    f.write(byte_data)
+
+                    data = load_document(file_name)
+                    chunks = chunk_document_data(data, chunk_size=chunk_size)
+                    st.write(f'Chunk size: {chunk_size}, Chunks: {len(chunks)}')
+
+                    vector_store = create_embedding_chroma(chunks)
+                    st.session_state.vs = vector_store
+                    st.success('File loaded, chunked and embedded successfully')
+
+    que = st.text_input('Ask a question about content of your files')
+    if que:
+        if 'vs' in st.session_state:
+            vectorstore = st.session_state.vs
+            st.write(f'k: {k}')
+            answer = ask_and_get_answer(vectorstore, que, k)
+            st.text_area('LLM Answer: ', value=answer)
+
+            #Adding chat history to streamlit session state
+            st.divider()
+            if 'history' not in st.session_state:
+                st.session_state.history = ''
+            value = f'Question: {que} \nAnswer: {answer}'
+            st.session_state.history = f'{value} {"-"*100} \n {st.session_state.history}'
+            h_chat = st.session_state.history
+            st.text_area(label='Chat History', value=h_chat, key='history', height=400)
+
 
 
